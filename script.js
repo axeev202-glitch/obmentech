@@ -1,26 +1,22 @@
 // Инициализация Telegram Web App
 const tg = window.Telegram.WebApp;
 tg.expand();
-tg.enableClosingConfirmation();
 
-// Данные приложения
+// URL вашего Vercel приложения
+const API_URL = 'https://obmentech.vercel.app/api';
+
 let appData = {
     user: null,
     listings: [],
-    myListings: [],
-    exchanges: []
+    myListings: []
 };
 
-// Города для локаций
-const cities = ['Москва', 'Санкт-Петербург', 'Новосибирск', 'Екатеринбург', 'Казань', 'Нижний Новгород', 'Челябинск', 'Самара', 'Омск', 'Ростов-на-Дону'];
-
-// Инициализация приложения
 document.addEventListener('DOMContentLoaded', function() {
     initializeApp();
     setupEventListeners();
 });
 
-function initializeApp() {
+async function initializeApp() {
     const user = tg.initDataUnsafe?.user;
     if (user) {
         appData.user = {
@@ -32,7 +28,7 @@ function initializeApp() {
         updateUserProfile();
     }
     
-    loadUserListings();
+    await loadListingsFromAPI();
 }
 
 function setupEventListeners() {
@@ -48,9 +44,7 @@ function setupEventListeners() {
     });
 
     document.querySelectorAll('.close').forEach(closeBtn => {
-        closeBtn.addEventListener('click', function() {
-            closeAllModals();
-        });
+        closeBtn.addEventListener('click', closeAllModals);
     });
 
     window.addEventListener('click', function(e) {
@@ -60,74 +54,110 @@ function setupEventListeners() {
     });
 }
 
-function switchTab(tabName) {
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    document.getElementById(tabName).classList.add('active');
-
-    if (tabName === 'feed') {
-        renderListings();
-    } else if (tabName === 'profile') {
-        updateUserProfile();
-    }
-}
-
-function updateUserProfile() {
-    if (appData.user) {
-        document.getElementById('user-name').textContent = 
-            `${appData.user.firstName} ${appData.user.lastName || ''}`.trim();
+// Загрузка объявлений с сервера
+async function loadListingsFromAPI() {
+    try {
+        const response = await fetch(`${API_URL}/listings`);
+        appData.listings = await response.json();
         
-        if (appData.user.username) {
-            document.getElementById('user-username').textContent = `@${appData.user.username}`;
+        if (appData.user) {
+            appData.myListings = appData.listings.filter(listing => listing.userId === appData.user.id);
         }
-
-        document.getElementById('active-listings').textContent = appData.myListings.length;
-        document.getElementById('completed-exchanges').textContent = appData.exchanges.length;
+        
+        renderListings();
+    } catch (error) {
+        console.error('Ошибка загрузки:', error);
+        showNotification('❌ Ошибка загрузки объявлений');
+        renderListings();
     }
 }
 
-function loadUserListings() {
-    const savedListings = localStorage.getItem('userListings');
-    const savedExchanges = localStorage.getItem('userExchanges');
-    
-    if (savedListings) {
-        appData.listings = JSON.parse(savedListings);
+// Создание объявления
+async function createNewListing() {
+    if (!appData.user) return;
+
+    const form = document.getElementById('create-listing-form');
+    const phoneModel = document.getElementById('phone-model').value.trim();
+    const condition = document.getElementById('phone-condition').value;
+    const desiredPhone = document.getElementById('desired-phone').value.trim();
+
+    if (!phoneModel || !condition || !desiredPhone) {
+        showNotification('❌ Заполните все поля');
+        return;
     }
-    
-    if (savedExchanges) {
-        appData.exchanges = JSON.parse(savedExchanges);
+
+    const conditionTextMap = {
+        'new': 'Новый', 'excellent': 'Отличное', 'good': 'Хорошее', 'satisfactory': 'Удовлетворительное'
+    };
+
+    const listingData = {
+        userId: appData.user.id,
+        userName: appData.user.firstName + (appData.user.lastName ? ' ' + appData.user.lastName : ''),
+        userRating: 5.0,
+        phoneModel: phoneModel,
+        condition: condition,
+        conditionText: conditionTextMap[condition],
+        description: document.getElementById('phone-description').value.trim() || 'Описание не указано',
+        desiredPhone: desiredPhone,
+        location: getRandomCity(),
+        isUserCreated: true
+    };
+
+    try {
+        const response = await fetch(`${API_URL}/listings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(listingData)
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            appData.listings.unshift(result.listing);
+            appData.myListings.unshift(result.listing);
+            form.reset();
+            showNotification('✅ Объявление опубликовано!');
+            switchTab('feed');
+        }
+    } catch (error) {
+        showNotification('❌ Ошибка публикации');
     }
-    
-    appData.listings = appData.listings.filter(listing => listing.status !== 'inactive');
-    
-    if (appData.user) {
-        appData.myListings = appData.listings.filter(listing => listing.userId === appData.user.id);
-    }
-    
-    renderListings();
 }
 
-function saveListings() {
-    localStorage.setItem('userListings', JSON.stringify(appData.listings));
-    localStorage.setItem('userExchanges', JSON.stringify(appData.exchanges));
+// Удаление объявления
+async function deleteListing(listingId) {
+    if (!confirm('Удалить объявление?')) return;
+
+    try {
+        const response = await fetch(`${API_URL}/listings?id=${listingId}`, {
+            method: 'DELETE'
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            appData.listings = appData.listings.filter(l => l.id !== listingId);
+            appData.myListings = appData.myListings.filter(l => l.id !== listingId);
+            closeAllModals();
+            renderListings();
+            updateUserProfile();
+            showNotification('🗑️ Объявление удалено');
+        }
+    } catch (error) {
+        showNotification('❌ Ошибка удаления');
+    }
 }
 
 function renderListings() {
     const container = document.querySelector('.listings-container');
-    const activeListings = appData.listings.filter(listing => listing.status === 'active');
     
-    if (activeListings.length === 0) {
+    if (appData.listings.length === 0) {
         container.innerHTML = `
             <div class="empty-state">
                 <h3>📱 Пока нет объявлений</h3>
                 <p>Будьте первым, кто создаст объявление!</p>
-                <button class="btn btn-primary" onclick="switchTab('create')" style="margin-top: 15px; width: auto; display: inline-block; padding: 10px 20px;">
+                <button class="btn btn-primary" onclick="switchTab('create')" 
+                    style="margin-top: 15px; width: auto; display: inline-block; padding: 10px 20px;">
                     ➕ Создать первое объявление
                 </button>
             </div>
@@ -135,7 +165,7 @@ function renderListings() {
         return;
     }
 
-    container.innerHTML = activeListings.map(listing => `
+    container.innerHTML = appData.listings.map(listing => `
         <div class="listing-card" onclick="openListingModal(${listing.id})">
             <div class="listing-content">
                 <div class="listing-image ${getPhoneBrand(listing.phoneModel)}">
@@ -146,9 +176,7 @@ function renderListings() {
                     <div class="listing-price">Обмен на ${listing.desiredPhone}</div>
                     <div class="listing-title">${listing.phoneModel} • ${listing.conditionText}</div>
                     <div class="listing-description">${listing.description}</div>
-                    <div class="listing-location">
-                        📍 ${listing.location}
-                    </div>
+                    <div class="listing-location">📍 ${listing.location}</div>
                     <div class="listing-meta">
                         <div class="user-info">
                             <span>${listing.userName}</span>
@@ -163,85 +191,78 @@ function renderListings() {
     `).join('');
 }
 
+// Вспомогательные функции
+function getRandomCity() {
+    const cities = ['Москва', 'Санкт-Петербург', 'Новосибирск', 'Екатеринбург', 'Казань'];
+    return cities[Math.floor(Math.random() * cities.length)];
+}
+
 function getPhoneBrand(model) {
-    const lowerModel = model.toLowerCase();
-    if (lowerModel.includes('iphone')) return 'iphone';
-    if (lowerModel.includes('samsung')) return 'samsung';
-    if (lowerModel.includes('xiaomi') || lowerModel.includes('redmi') || lowerModel.includes('poco')) return 'xiaomi';
-    if (lowerModel.includes('pixel')) return 'google';
-    if (lowerModel.includes('huawei') || lowerModel.includes('honor')) return 'huawei';
+    const lower = model.toLowerCase();
+    if (lower.includes('iphone')) return 'iphone';
+    if (lower.includes('samsung')) return 'samsung';
+    if (lower.includes('xiaomi') || lower.includes('redmi')) return 'xiaomi';
     return 'iphone';
 }
 
 function getPhoneEmoji(model) {
-    const lowerModel = model.toLowerCase();
-    if (lowerModel.includes('iphone')) return '📱';
-    if (lowerModel.includes('samsung')) return '📲';
-    if (lowerModel.includes('xiaomi') || lowerModel.includes('redmi') || lowerModel.includes('poco')) return '⚡';
-    if (lowerModel.includes('pixel')) return '🔷';
-    if (lowerModel.includes('huawei') || lowerModel.includes('honor')) return '🇨🇳';
+    const lower = model.toLowerCase();
+    if (lower.includes('iphone')) return '📱';
+    if (lower.includes('samsung')) return '📲';
+    if (lower.includes('xiaomi') || lower.includes('redmi')) return '⚡';
     return '📱';
 }
 
 function getTimeAgo(timestamp) {
     const now = new Date();
-    const listingTime = new Date(timestamp);
-    const diffInHours = Math.floor((now - listingTime) / (1000 * 60 * 60));
-    
-    if (diffInHours < 1) return 'только что';
-    if (diffInHours < 24) return `${diffInHours} ч назад`;
-    if (diffInHours < 168) return `${Math.floor(diffInHours / 24)} д назад`;
-    return listingTime.toLocaleDateString('ru-RU');
+    const time = new Date(timestamp);
+    const diff = Math.floor((now - time) / (1000 * 60 * 60));
+    if (diff < 1) return 'только что';
+    if (diff < 24) return `${diff} ч назад`;
+    return `${Math.floor(diff / 24)} д назад`;
 }
 
-function createNewListing() {
-    if (!appData.user) {
-        showNotification('❌ Ошибка: пользователь не определен');
-        return;
-    }
-
-    const form = document.getElementById('create-listing-form');
-    const phoneModel = document.getElementById('phone-model').value.trim();
-    const condition = document.getElementById('phone-condition').value;
-    const desiredPhone = document.getElementById('desired-phone').value.trim();
+function switchTab(tabName) {
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     
-    if (!phoneModel || !condition || !desiredPhone) {
-        showNotification('❌ Заполните все обязательные поля');
-        return;
-    }
-    
-    const conditionTextMap = {
-        'new': 'Новый',
-        'excellent': 'Отличное',
-        'good': 'Хорошее',
-        'satisfactory': 'Удовлетворительное'
-    };
+    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+    document.getElementById(tabName).classList.add('active');
 
-    const newListing = {
-        id: Date.now(),
-        userId: appData.user.id,
-        userName: appData.user.firstName + (appData.user.lastName ? ' ' + appData.user.lastName : ''),
-        userRating: 5.0,
-        phoneModel: phoneModel,
-        condition: condition,
-        conditionText: conditionTextMap[condition],
-        description: document.getElementById('phone-description').value.trim() || 'Описание не указано',
-        desiredPhone: desiredPhone,
-        location: cities[Math.floor(Math.random() * cities.length)],
-        status: 'active',
-        timestamp: new Date().toISOString(),
-        isUserCreated: true
-    };
-
-    appData.listings.unshift(newListing);
-    appData.myListings.unshift(newListing);
-
-    saveListings();
-    form.reset();
-    showNotification('✅ Объявление успешно опубликовано!');
-    switchTab('feed');
+    if (tabName === 'feed') renderListings();
+    if (tabName === 'profile') updateUserProfile();
 }
 
+function updateUserProfile() {
+    if (appData.user) {
+        document.getElementById('user-name').textContent = 
+            `${appData.user.firstName} ${appData.user.lastName || ''}`.trim();
+        if (appData.user.username) {
+            document.getElementById('user-username').textContent = `@${appData.user.username}`;
+        }
+        document.getElementById('active-listings').textContent = appData.myListings.length;
+    }
+}
+
+function showNotification(message) {
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+        background: #0088cc; color: white; padding: 12px 20px; border-radius: 8px;
+        z-index: 10000; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    `;
+    notification.textContent = message;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+}
+
+function closeAllModals() {
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.style.display = 'none';
+    });
+}
+
+// Функции для модальных окон (добавьте их)
 function openListingModal(listingId) {
     const listing = appData.listings.find(l => l.id === listingId);
     if (!listing) return;
@@ -303,9 +324,6 @@ function openListingModal(listingId) {
     document.getElementById('listing-modal').dataset.listingId = listingId;
 }
 
-// Остальные функции (editListing, deleteListing, startExchange, contactSeller, confirmExchange) 
-// остаются такими же как в предыдущей версии
-
 function editListing(listingId) {
     const listing = appData.listings.find(l => l.id === listingId);
     if (listing) {
@@ -317,23 +335,6 @@ function editListing(listingId) {
         closeAllModals();
         switchTab('create');
         showNotification('✏️ Редактируйте ваше объявление');
-    }
-}
-
-function deleteListing(listingId) {
-    if (confirm('Вы уверены, что хотите удалить это объявление?')) {
-        const listingIndex = appData.listings.findIndex(l => l.id === listingId);
-        if (listingIndex !== -1) {
-            appData.listings[listingIndex].status = 'inactive';
-        }
-        
-        appData.myListings = appData.myListings.filter(l => l.id !== listingId);
-        
-        saveListings();
-        closeAllModals();
-        renderListings();
-        updateUserProfile();
-        showNotification('🗑️ Объявление удалено');
     }
 }
 
@@ -357,66 +358,6 @@ function contactSeller() {
 
 function confirmExchange() {
     const listingId = document.getElementById('exchange-modal').dataset.listingId;
-    
-    const newExchange = {
-        id: Date.now(),
-        listingId: parseInt(listingId),
-        status: 'pending',
-        timestamp: new Date().toISOString(),
-        guarantorFee: 100
-    };
-
-    appData.exchanges.push(newExchange);
-    saveListings();
-    
     showNotification('🔄 Обмен оформлен! С вами свяжется гарант в течение 24 часов.');
     closeAllModals();
-    updateUserProfile();
 }
-
-function closeAllModals() {
-    document.querySelectorAll('.modal').forEach(modal => {
-        modal.style.display = 'none';
-    });
-}
-
-function showNotification(message) {
-    const notification = document.createElement('div');
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: #0088cc;
-        color: white;
-        padding: 12px 20px;
-        border-radius: 8px;
-        z-index: 10000;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        animation: slideDown 0.3s ease;
-        font-size: 14px;
-    `;
-    notification.textContent = message;
-    
-    document.body.appendChild(notification);
-    
-    setTimeout(() => {
-        notification.remove();
-    }, 3000);
-}
-
-// Добавляем CSS анимацию
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideDown {
-        from {
-            opacity: 0;
-            transform: translate(-50%, -20px);
-        }
-        to {
-            opacity: 1;
-            transform: translate(-50%, 0);
-        }
-    }
-`;
-document.head.appendChild(style);
